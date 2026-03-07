@@ -1,41 +1,114 @@
-// scraper.js — Récupération AUTOMATIQUE résultats tirage
-// Sources: Georgia, Florida, New-York, Ohio, Chicago, Maryland, Tennessee
+// ════════════════════════════════════════════════════════════════
+//  scraper.js — Résultats tiraj AUTOMATIK
+//  SOURCE 1 (PRENSIPAL) : RapidAPI NosyAPI — update 10min apre tiraj
+//  SOURCE 2 (BACKUP)    : lottery.net HTML scraping — gratis
+//  Si RapidAPI tonbe oswa pa gen kle → backup otomatik
+// ════════════════════════════════════════════════════════════════
 const express = require('express');
 const router  = express.Router();
 const db      = require('../database');
 const https   = require('https');
 const http    = require('http');
 
-// ── MAPPING COMPLET ────────────────────────────────────────────
-const ALL_TIRAGES = [
-  'Georgia-Matin', 'Georgia-Soir',
-  'Florida matin', 'Florida soir',
-  'New-york matin', 'New-york soir',
-  'Ohio matin', 'Ohio soir',
-  'Chicago matin', 'Chicago soir',
-  'Maryland midi', 'Maryland soir',
-  'Tennessee matin', 'Tennessee soir',
+// ── CONFIGURATION ─────────────────────────────────────────────
+// Mete RAPIDAPI_KEY nan fichye .env sou Railway
+// Si pa gen kle → backup HTML otomatikman
+const RAPIDAPI_KEY  = process.env.RAPIDAPI_KEY || '';
+const RAPIDAPI_HOST = 'usa-lottery-result-all-state-api.p.rapidapi.com';
+
+// ── MAPPING COMPLET — NosyAPI gameId ──────────────────────────
+// gameId pou chak tiraj nan NosyAPI
+// Jwenn yo nan: GET /states → GET /games?stateCode=GA
+const RAPIDAPI_GAMES = [
+  // Georgia Cash 3
+  { tirage: 'Georgia-Matin',   stateCode:'GA', gameName:'Cash 3',   drawName:'Midday'  },
+  { tirage: 'Georgia-Soir',    stateCode:'GA', gameName:'Cash 3',   drawName:'Evening' },
+  // Florida Cash 3
+  { tirage: 'Florida matin',   stateCode:'FL', gameName:'Cash 3',   drawName:'Midday'  },
+  { tirage: 'Florida soir',    stateCode:'FL', gameName:'Cash 3',   drawName:'Evening' },
+  // New York Numbers
+  { tirage: 'New-york matin',  stateCode:'NY', gameName:'Numbers',  drawName:'Midday'  },
+  { tirage: 'New-york soir',   stateCode:'NY', gameName:'Numbers',  drawName:'Evening' },
+  // Ohio Pick 3
+  { tirage: 'Ohio matin',      stateCode:'OH', gameName:'Pick 3',   drawName:'Midday'  },
+  { tirage: 'Ohio soir',       stateCode:'OH', gameName:'Pick 3',   drawName:'Evening' },
+  // Illinois (Chicago) Pick 3
+  { tirage: 'Chicago matin',   stateCode:'IL', gameName:'Pick 3',   drawName:'Midday'  },
+  { tirage: 'Chicago soir',    stateCode:'IL', gameName:'Pick 3',   drawName:'Evening' },
+  // Maryland Pick 3
+  { tirage: 'Maryland midi',   stateCode:'MD', gameName:'Pick 3',   drawName:'Midday'  },
+  { tirage: 'Maryland soir',   stateCode:'MD', gameName:'Pick 3',   drawName:'Evening' },
+  // Tennessee Cash 3
+  { tirage: 'Tennessee matin', stateCode:'TN', gameName:'Cash 3',   drawName:'Midday'  },
+  { tirage: 'Tennessee soir',  stateCode:'TN', gameName:'Cash 3',   drawName:'Evening' },
 ];
 
-// ── FETCH HELPER ──────────────────────────────────────────────
-function fetchUrl(url, timeout = 12000) {
+// ── BACKUP — lottery.net URLs ──────────────────────────────────
+const BACKUP_SOURCES = {
+  'Georgia-Matin':   'https://www.lottery.net/georgia/cash-3-midday/numbers',
+  'Georgia-Soir':    'https://www.lottery.net/georgia/cash-3-evening/numbers',
+  'Florida matin':   'https://www.lottery.net/florida/cash-3-midday/numbers',
+  'Florida soir':    'https://www.lottery.net/florida/cash-3-evening/numbers',
+  'New-york matin':  'https://www.lottery.net/new-york/numbers-midday/numbers',
+  'New-york soir':   'https://www.lottery.net/new-york/numbers-evening/numbers',
+  'Ohio matin':      'https://www.lottery.net/ohio/pick-3-midday/numbers',
+  'Ohio soir':       'https://www.lottery.net/ohio/pick-3-evening/numbers',
+  'Chicago matin':   'https://www.lottery.net/illinois/pick-3-midday/numbers',
+  'Chicago soir':    'https://www.lottery.net/illinois/pick-3-evening/numbers',
+  'Maryland midi':   'https://www.lottery.net/maryland/pick-3-midday/numbers',
+  'Maryland soir':   'https://www.lottery.net/maryland/pick-3-evening/numbers',
+  'Tennessee matin': 'https://www.lottery.net/tennessee/cash-3-midday/numbers',
+  'Tennessee soir':  'https://www.lottery.net/tennessee/cash-3-evening/numbers',
+};
+
+// ══════════════════════════════════════════════════════════════
+//  FETCH HELPERS
+// ══════════════════════════════════════════════════════════════
+function fetchJson(url, headers = {}, timeout = 12000) {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith('https') ? https : http;
+    const req = lib.get(url, {
+      timeout,
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0',
+        ...headers,
+      }
+    }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return fetchJson(res.headers.location, headers, timeout).then(resolve).catch(reject);
+      }
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch { reject(new Error('JSON parse error: ' + data.slice(0, 100))); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+  });
+}
+
+function fetchHtml(url, timeout = 12000) {
   return new Promise((resolve, reject) => {
     const lib = url.startsWith('https') ? https : http;
     const req = lib.get(url, {
       timeout,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'text/html,application/json,*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Cache-Control': 'no-cache',
+        'Accept': 'text/html,*/*',
+        'Accept-Encoding': 'identity',
       }
     }, (res) => {
-      // Follow redirects
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return fetchUrl(res.headers.location, timeout).then(resolve).catch(reject);
+        const next = res.headers.location.startsWith('http')
+          ? res.headers.location
+          : 'https://www.lottery.net' + res.headers.location;
+        return fetchHtml(next, timeout).then(resolve).catch(reject);
       }
       let data = '';
-      res.on('data', chunk => data += chunk);
+      res.on('data', c => data += c);
       res.on('end', () => resolve(data));
     });
     req.on('error', reject);
@@ -44,348 +117,243 @@ function fetchUrl(url, timeout = 12000) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  SOURCE 1 — Georgia Lottery (ga.gov officiel)
+//  SOURCE 1 — RapidAPI NosyAPI
 // ══════════════════════════════════════════════════════════════
-async function fetchGeorgia() {
+let _rapidApiGameMap = null; // cache
+
+async function buildRapidApiMap() {
+  if (_rapidApiGameMap) return _rapidApiGameMap;
+  if (!RAPIDAPI_KEY) return null;
   try {
-    // API JSON officielle Georgia
-    const url = 'https://www.galottery.com/content/dam/portal-web/game-data/draw-results/cash3.json';
-    const data = await fetchUrl(url, 8000);
-    const json = JSON.parse(data);
-    const results = {};
-
-    if (json && json.draws) {
-      // Trier par date décroissante
-      const draws = json.draws.sort((a, b) => new Date(b.drawDate) - new Date(a.drawDate));
-      const today = new Date().toISOString().split('T')[0];
-
-      for (const draw of draws.slice(0, 4)) {
-        const drawDate = draw.drawDate?.split('T')[0] || today;
-        if (drawDate !== today) continue;
-
-        const nums = draw.winningNumbers?.split('-') || draw.winningNumbers?.split(' ') || [];
-        if (nums.length < 1) continue;
-
-        const isEvening = draw.drawTime?.toLowerCase().includes('eve') ||
-                          draw.drawName?.toLowerCase().includes('eve') ||
-                          draw.drawTime === 'Evening';
-        const key = isEvening ? 'Georgia-Soir' : 'Georgia-Matin';
-
-        if (!results[key]) {
-          results[key] = {
-            lot1: String(nums[0]||'').padStart(2,'0'),
-            lot2: String(nums[1]||'').padStart(2,'0'),
-            lot3: String(nums[2]||'').padStart(2,'0'),
-            date: drawDate, source: 'galottery.com'
-          };
-        }
-      }
-    }
-    return results;
-  } catch (e) {
-    console.log('[SCRAPER] Georgia error:', e.message);
-    return {};
-  }
-}
-
-// ══════════════════════════════════════════════════════════════
-//  SOURCE 2 — Florida Lottery
-// ══════════════════════════════════════════════════════════════
-async function fetchFlorida() {
-  try {
-    const url = 'https://www.flalottery.com/site/winningNumberSearch?searchTypeIn=0&gameNameIn=CASH3&singleDateIn=&startDateIn=&endDateIn=&n=1&format=json';
-    const data = await fetchUrl(url, 8000);
-    const json = JSON.parse(data);
-    const results = {};
-    const today   = new Date().toISOString().split('T')[0];
-
-    const draws = json.draws || json.drawingResults || [];
-    for (const draw of draws) {
-      const drawDate = (draw.date || draw.drawDate || '').split('T')[0];
-      if (drawDate !== today) continue;
-
-      const nums = (draw.winningNumbers || draw.numbers || '').split('-');
-      const isEve = (draw.drawTime||draw.timeOfDay||'').toLowerCase().includes('eve') ||
-                    (draw.drawName||'').toLowerCase().includes('eve');
-      const key = isEve ? 'Florida soir' : 'Florida matin';
-
-      if (!results[key] && nums[0]) {
-        results[key] = {
-          lot1: String(nums[0]).padStart(2,'0'),
-          lot2: String(nums[1]||'').padStart(2,'0'),
-          lot3: String(nums[2]||'').padStart(2,'0'),
-          date: drawDate, source: 'flalottery.com'
-        };
-      }
-    }
-    return results;
-  } catch (e) {
-    console.log('[SCRAPER] Florida error:', e.message);
-    return {};
-  }
-}
-
-// ══════════════════════════════════════════════════════════════
-//  SOURCE 3 — New York Lottery (Win 4 / Numbers)
-// ══════════════════════════════════════════════════════════════
-async function fetchNewYork() {
-  try {
-    const url = 'https://nylottery.ny.gov/api/public/getDrawResults?gameSlug=numbers&num=2';
-    const data = await fetchUrl(url, 8000);
-    const json = JSON.parse(data);
-    const results = {};
-    const today   = new Date().toISOString().split('T')[0];
-
-    const draws = json?.data?.draws || json?.draws || [];
-    for (const draw of draws) {
-      const drawDate = (draw.date || draw.drawDate || '').split('T')[0];
-      if (drawDate !== today) continue;
-
-      const nums = draw.results?.[0]?.winningNumbers || draw.winningNumbers || '';
-      const numsArr = typeof nums === 'string' ? nums.split(/[\s-]+/) : nums;
-      const isEve = (draw.drawName||draw.drawTime||'').toLowerCase().includes('eve');
-      const key = isEve ? 'New-york soir' : 'New-york matin';
-
-      if (!results[key] && numsArr[0]) {
-        results[key] = {
-          lot1: String(numsArr[0]).padStart(2,'0'),
-          lot2: String(numsArr[1]||'').padStart(2,'0'),
-          lot3: String(numsArr[2]||'').padStart(2,'0'),
-          date: drawDate, source: 'nylottery.gov'
-        };
-      }
-    }
-    return results;
-  } catch (e) {
-    console.log('[SCRAPER] NewYork error:', e.message);
-    return {};
-  }
-}
-
-// ══════════════════════════════════════════════════════════════
-//  SOURCE 4 — Ohio Lottery (Pick 3)
-// ══════════════════════════════════════════════════════════════
-async function fetchOhio() {
-  try {
-    const url = 'https://www.ohiolottery.com/api/DrawResults/Pick3?count=2';
-    const data = await fetchUrl(url, 8000);
-    const json = JSON.parse(data);
-    const results = {};
-    const today   = new Date().toISOString().split('T')[0];
-
-    const draws = json?.draws || json || [];
-    for (const draw of (Array.isArray(draws) ? draws : [])) {
-      const drawDate = (draw.DrawDate || draw.date || '').split('T')[0];
-      if (drawDate !== today) continue;
-
-      const nums = (draw.WinningNumbers || draw.numbers || '').split(/[\s-]+/);
-      const isEve = (draw.DrawTime||draw.drawName||'').toLowerCase().includes('eve');
-      const key = isEve ? 'Ohio soir' : 'Ohio matin';
-
-      if (!results[key] && nums[0]) {
-        results[key] = {
-          lot1: String(nums[0]).padStart(2,'0'),
-          lot2: String(nums[1]||'').padStart(2,'0'),
-          lot3: String(nums[2]||'').padStart(2,'0'),
-          date: drawDate, source: 'ohiolottery.com'
-        };
-      }
-    }
-    return results;
-  } catch (e) {
-    console.log('[SCRAPER] Ohio error:', e.message);
-    return {};
-  }
-}
-
-// ══════════════════════════════════════════════════════════════
-//  SOURCE 5 — Illinois (Chicago) Pick 3
-// ══════════════════════════════════════════════════════════════
-async function fetchChicago() {
-  try {
-    const url = 'https://www.illinoislottery.com/content/dam/il/lottery/ilpick3.json';
-    const data = await fetchUrl(url, 8000);
-    const json = JSON.parse(data);
-    const results = {};
-    const today   = new Date().toISOString().split('T')[0];
-
-    const draws = json?.draws || json?.drawResults || [];
-    for (const draw of draws.slice(0, 4)) {
-      const drawDate = (draw.drawDate || draw.date || '').split('T')[0];
-      if (drawDate !== today) continue;
-
-      const nums = (draw.winningNumbers || '').split(/[\s-]+/);
-      const isEve = (draw.drawName||draw.drawTime||'').toLowerCase().includes('eve');
-      const key = isEve ? 'Chicago soir' : 'Chicago matin';
-
-      if (!results[key] && nums[0]) {
-        results[key] = {
-          lot1: String(nums[0]).padStart(2,'0'),
-          lot2: String(nums[1]||'').padStart(2,'0'),
-          lot3: String(nums[2]||'').padStart(2,'0'),
-          date: drawDate, source: 'illinoislottery.com'
-        };
-      }
-    }
-    return results;
-  } catch (e) {
-    console.log('[SCRAPER] Chicago error:', e.message);
-    return {};
-  }
-}
-
-// ══════════════════════════════════════════════════════════════
-//  SOURCE 6 — Maryland Pick 3
-// ══════════════════════════════════════════════════════════════
-async function fetchMaryland() {
-  try {
-    const url = 'https://www.mdlottery.com/api/draw-results?game=pick3&count=2';
-    const data = await fetchUrl(url, 8000);
-    const json = JSON.parse(data);
-    const results = {};
-    const today   = new Date().toISOString().split('T')[0];
-
-    const draws = json?.data || json?.draws || json || [];
-    for (const draw of (Array.isArray(draws) ? draws : [])) {
-      const drawDate = (draw.drawDate || draw.date || '').split('T')[0];
-      if (drawDate !== today) continue;
-
-      const nums = (draw.winningNumbers || draw.numbers || '').split(/[\s-]+/);
-      const drawName = (draw.drawName || draw.drawTime || '').toLowerCase();
-      const isMidi = drawName.includes('mid') || drawName.includes('noon');
-      const isEve  = drawName.includes('eve');
-      const key    = isMidi ? 'Maryland midi' : 'Maryland soir';
-
-      if (!results[key] && nums[0]) {
-        results[key] = {
-          lot1: String(nums[0]).padStart(2,'0'),
-          lot2: String(nums[1]||'').padStart(2,'0'),
-          lot3: String(nums[2]||'').padStart(2,'0'),
-          date: drawDate, source: 'mdlottery.com'
-        };
-      }
-    }
-    return results;
-  } catch (e) {
-    console.log('[SCRAPER] Maryland error:', e.message);
-    return {};
-  }
-}
-
-// ══════════════════════════════════════════════════════════════
-//  SOURCE 7 — Tennessee Cash 3
-// ══════════════════════════════════════════════════════════════
-async function fetchTennessee() {
-  try {
-    const url = 'https://www.tnlottery.com/api/draw-results/cash3/latest';
-    const data = await fetchUrl(url, 8000);
-    const json = JSON.parse(data);
-    const results = {};
-    const today   = new Date().toISOString().split('T')[0];
-
-    const draws = json?.draws || (Array.isArray(json) ? json : [json]);
-    for (const draw of draws.slice(0, 2)) {
-      const drawDate = (draw.drawDate || draw.date || '').split('T')[0];
-      if (drawDate !== today) continue;
-
-      const nums = (draw.winningNumbers || '').split(/[\s-]+/);
-      const isEve = (draw.drawName||draw.drawTime||'').toLowerCase().includes('eve');
-      const key = isEve ? 'Tennessee soir' : 'Tennessee matin';
-
-      if (!results[key] && nums[0]) {
-        results[key] = {
-          lot1: String(nums[0]).padStart(2,'0'),
-          lot2: String(nums[1]||'').padStart(2,'0'),
-          lot3: String(nums[2]||'').padStart(2,'0'),
-          date: drawDate, source: 'tnlottery.com'
-        };
-      }
-    }
-    return results;
-  } catch (e) {
-    console.log('[SCRAPER] Tennessee error:', e.message);
-    return {};
-  }
-}
-
-// ══════════════════════════════════════════════════════════════
-//  FETCH PRINCIPAL — essaie toutes les sources en parallèle
-// ══════════════════════════════════════════════════════════════
-async function fetchAllResults() {
-  console.log('[SCRAPER] Fetching all results...');
-
-  const [ga, fl, ny, oh, ch, md, tn] = await Promise.allSettled([
-    fetchGeorgia(), fetchFlorida(), fetchNewYork(),
-    fetchOhio(), fetchChicago(), fetchMaryland(), fetchTennessee()
-  ]);
-
-  const results = {
-    ...(ga.value || {}), ...(fl.value || {}), ...(ny.value || {}),
-    ...(oh.value || {}), ...(ch.value || {}), ...(md.value || {}),
-    ...(tn.value || {}),
-  };
-
-  const found = Object.keys(results).length;
-  console.log(`[SCRAPER] Fetched ${found} results:`, Object.keys(results).join(', ') || 'none');
-  return results;
-}
-
-// ── SAUVEGARDER RÉSULTATS EN DB + BROADCAST ─────────────────
-async function saveResults(results, broadcast) {
-  const today = new Date().toISOString().split('T')[0];
-  const saved = [];
-
-  for (const [tirage, data] of Object.entries(results)) {
-    if (!data.lot1) continue;
-    try {
-      const exists = await db.resultats.findOne({
-        tirage,
-        date: { $gte: new Date(today), $lt: new Date(today + 'T23:59:59') }
-      });
-
-      if (!exists) {
-        const r = await db.resultats.insert({
-          tirage, lot1: data.lot1, lot2: data.lot2 || '',
-          lot3: data.lot3 || '', date: new Date(),
-          source: data.source || 'auto', createdAt: new Date()
-        });
-        saved.push(r);
-        // Broadcast immédiat à tous les POS
-        if (broadcast) {
-          broadcast({
-            type: 'nouveau_resultat',
-            tirage, lot1: data.lot1, lot2: data.lot2||'', lot3: data.lot3||'',
-            date: new Date(), source: data.source || 'auto',
-            ts: Date.now()
-          });
-        }
-        console.log(`[SCRAPER] ✅ Sauvé: ${tirage} → ${data.lot1}-${data.lot2}-${data.lot3} (${data.source})`);
-      } else {
-        // Mettre à jour seulement si les boules ont changé
-        if (exists.lot1 !== data.lot1) {
-          await db.resultats.update(
-            { _id: exists._id },
-            { $set: { lot1: data.lot1, lot2: data.lot2||'', lot3: data.lot3||'', updatedAt: new Date() } }
-          );
-          saved.push({ ...exists, updated: true });
-          if (broadcast) {
-            broadcast({ type: 'nouveau_resultat', tirage, lot1: data.lot1, lot2: data.lot2||'', lot3: data.lot3||'', ts: Date.now() });
+    // Récupère tous les jeux par état en une seule requête
+    const data = await fetchJson(
+      'https://usa-lottery-result-all-state-api.p.rapidapi.com/getAllGames',
+      { 'x-rapidapi-key': RAPIDAPI_KEY, 'x-rapidapi-host': RAPIDAPI_HOST }
+    );
+    // Construit un map: "GA|Cash 3|Midday" → gameId
+    _rapidApiGameMap = {};
+    for (const [stateCode, games] of Object.entries(data || {})) {
+      for (const game of (games || [])) {
+        for (const play of (game.plays || [])) {
+          const key = `${stateCode}|${game.name}|${play.name}`;
+          const draws = play.draws || [];
+          if (draws.length > 0) {
+            _rapidApiGameMap[key] = { draws, game: game.name, play: play.name };
           }
         }
       }
-    } catch (e) {
-      console.log('[SCRAPER] Save error:', e.message);
     }
+    console.log('[RAPIDAPI] Map construit:', Object.keys(_rapidApiGameMap).length, 'jeux');
+    return _rapidApiGameMap;
+  } catch (e) {
+    console.log('[RAPIDAPI] buildMap error:', e.message);
+    return null;
+  }
+}
+
+async function fetchFromRapidApi() {
+  if (!RAPIDAPI_KEY) {
+    console.log('[RAPIDAPI] Pas de clé API — utilisation backup HTML');
+    return {};
+  }
+  try {
+    const map = await buildRapidApiMap();
+    if (!map) return {};
+
+    const today = new Date().toISOString().split('T')[0];
+    const results = {};
+
+    for (const game of RAPIDAPI_GAMES) {
+      // Essaie plusieurs variantes de nom
+      const variants = [
+        `${game.stateCode}|${game.gameName}|${game.drawName}`,
+        `${game.stateCode}|${game.gameName}|${game.drawName.toLowerCase()}`,
+        `${game.stateCode}|${game.gameName}|Midday` ,
+        `${game.stateCode}|${game.gameName}|Evening`,
+        `${game.stateCode}|${game.gameName}|Morning`,
+      ];
+
+      let found = null;
+      for (const v of variants) {
+        if (map[v]) { found = map[v]; break; }
+      }
+      if (!found) {
+        // Cherche n'importe quelle clé qui commence par stateCode|gameName
+        const prefix = `${game.stateCode}|${game.gameName}|`;
+        const matchKey = Object.keys(map).find(k => k.startsWith(prefix) &&
+          (game.drawName === 'Midday'  ? k.toLowerCase().includes('mid') || k.toLowerCase().includes('morn') :
+           game.drawName === 'Evening' ? k.toLowerCase().includes('eve') || k.toLowerCase().includes('night') : true));
+        if (matchKey) found = map[matchKey];
+      }
+      if (!found) continue;
+
+      const draws = found.draws;
+      if (!draws || draws.length === 0) continue;
+
+      // Prend le draw du jour
+      const draw = draws.find(d => {
+        const dDate = parseRapidDate(d.date);
+        return dDate === today;
+      }) || draws[0]; // fallback: dernier draw
+
+      if (!draw || !draw.numbers) continue;
+      const nums = draw.numbers.sort((a,b) => a.order - b.order);
+      if (nums.length < 3) continue;
+
+      results[game.tirage] = {
+        lot1: String(nums[0].value).padStart(2,'0'),
+        lot2: String(nums[1].value).padStart(2,'0'),
+        lot3: String(nums[2].value).padStart(2,'0'),
+        date: parseRapidDate(draw.date) || today,
+        source: 'rapidapi-nosyapi',
+      };
+    }
+
+    const found = Object.keys(results).length;
+    console.log(`[RAPIDAPI] ${found} résultats obtenus`);
+    return results;
+  } catch (e) {
+    console.log('[RAPIDAPI] Erreur globale:', e.message);
+    _rapidApiGameMap = null; // reset cache
+    return {};
+  }
+}
+
+function parseRapidDate(dateStr) {
+  if (!dateStr) return null;
+  // Format "MM/DD/YYYY"
+  const m = dateStr.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (m) return `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+  // Format ISO
+  if (dateStr.includes('-')) return dateStr.split('T')[0];
+  return null;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  SOURCE 2 — lottery.net HTML (BACKUP)
+// ══════════════════════════════════════════════════════════════
+function parseHtmlResult(html) {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    // Cherche toutes les lignes de tableau avec date + boules
+    const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+    let rowMatch;
+    const found = [];
+    while ((rowMatch = rowRegex.exec(html)) !== null) {
+      const row = rowMatch[1];
+      const dateMatch = row.match(/(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s*(\d{4})/i);
+      const numsMatch = row.match(/\*\s*(\d)\s*\*\s*(\d)\s*\*\s*(\d)/);
+      if (dateMatch && numsMatch) {
+        const d = new Date(`${dateMatch[1]} ${dateMatch[2]}, ${dateMatch[3]}`);
+        found.push({
+          date:  d.toISOString().split('T')[0],
+          lot1: numsMatch[1].padStart(2,'0'),
+          lot2: numsMatch[2].padStart(2,'0'),
+          lot3: numsMatch[3].padStart(2,'0'),
+          source: 'lottery.net-backup',
+        });
+      }
+    }
+    if (found.length === 0) return null;
+    found.sort((a,b) => new Date(b.date) - new Date(a.date));
+    // Accepte aujourd'hui ou hier
+    const yesterday = new Date(); yesterday.setDate(yesterday.getDate()-1);
+    const yStr = yesterday.toISOString().split('T')[0];
+    const latest = found[0];
+    if (latest.date === today || latest.date === yStr) return latest;
+    return null;
+  } catch { return null; }
+}
+
+async function fetchFromBackup(tiragesToFetch) {
+  const results = {};
+  // Chunks de 3 pour pas surcharger
+  for (let i = 0; i < tiragesToFetch.length; i += 3) {
+    const chunk = tiragesToFetch.slice(i, i+3);
+    await Promise.allSettled(chunk.map(async tirage => {
+      const url = BACKUP_SOURCES[tirage];
+      if (!url) return;
+      try {
+        const html = await fetchHtml(url);
+        const r = parseHtmlResult(html);
+        if (r) {
+          results[tirage] = r;
+          console.log(`[BACKUP] ✅ ${tirage}: ${r.lot1}-${r.lot2}-${r.lot3}`);
+        } else {
+          console.log(`[BACKUP] ⚠️  ${tirage}: pas de résultat aujourd'hui`);
+        }
+      } catch (e) {
+        console.log(`[BACKUP] ❌ ${tirage}: ${e.message}`);
+      }
+    }));
+    if (i + 3 < tiragesToFetch.length) await new Promise(r => setTimeout(r, 800));
+  }
+  return results;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  FETCH PRINCIPAL — RapidAPI + Backup automatik
+// ══════════════════════════════════════════════════════════════
+async function fetchAllResults() {
+  const allTirages = RAPIDAPI_GAMES.map(g => g.tirage);
+  console.log(`\n[SCRAPER] ${new Date().toISOString()}`);
+  console.log(`[SCRAPER] Source 1: RapidAPI (key: ${RAPIDAPI_KEY ? '✅ configuré' : '❌ manquant'})`);
+
+  // Étape 1: RapidAPI
+  const rapidResults = await fetchFromRapidApi();
+  const rapidFound   = Object.keys(rapidResults);
+
+  // Étape 2: Backup pour ceux non trouvés
+  const missing = allTirages.filter(t => !rapidFound.includes(t));
+  let backupResults = {};
+  if (missing.length > 0) {
+    console.log(`[SCRAPER] Source 2: Backup HTML pour ${missing.length} tiraj mankan: ${missing.join(', ')}`);
+    backupResults = await fetchFromBackup(missing);
+  }
+
+  const final = { ...rapidResults, ...backupResults };
+  console.log(`[SCRAPER] Total final: ${Object.keys(final).length}/${allTirages.length} résultats`);
+  return final;
+}
+
+// ── SAUVEGARDER EN DB + BROADCAST ─────────────────────────────
+async function saveResults(results, broadcast) {
+  const today  = new Date().toISOString().split('T')[0];
+  const saved  = [];
+  for (const [tirage, data] of Object.entries(results)) {
+    if (!data.lot1) continue;
+    try {
+      const dayStart = new Date(today + 'T00:00:00');
+      const dayEnd   = new Date(today + 'T23:59:59');
+      const exists   = await db.resultats.findOne({ tirage, date: { $gte: dayStart, $lte: dayEnd }});
+      if (!exists) {
+        const r = await db.resultats.insert({
+          tirage, lot1: data.lot1, lot2: data.lot2||'', lot3: data.lot3||'',
+          date: new Date(), source: data.source||'auto', createdAt: new Date()
+        });
+        saved.push(r);
+        if (broadcast) broadcast({ type:'nouveau_resultat', tirage,
+          lot1:data.lot1, lot2:data.lot2||'', lot3:data.lot3||'',
+          date: new Date().toISOString(), source: data.source, ts: Date.now() });
+        console.log(`[DB] ✅ Sauvé: ${tirage} ${data.lot1}-${data.lot2}-${data.lot3} (${data.source})`);
+      } else if (exists.lot1 !== data.lot1) {
+        await db.resultats.update({ _id: exists._id },
+          { $set: { lot1:data.lot1, lot2:data.lot2||'', lot3:data.lot3||'', updatedAt: new Date() }});
+        saved.push({ ...exists, updated:true });
+        if (broadcast) broadcast({ type:'nouveau_resultat', tirage,
+          lot1:data.lot1, lot2:data.lot2||'', lot3:data.lot3||'', ts: Date.now() });
+      }
+    } catch (e) { console.log('[DB] Save error:', e.message); }
   }
   return saved;
 }
 
-// ── HELPER: DERNIERS RÉSULTATS PAR TIRAGE ─────────────────────
+// ── DERNIERS RÉSULTATS ─────────────────────────────────────────
 async function getLatestResults() {
   const latest = {};
-  for (const tirage of ALL_TIRAGES) {
-    const results = await db.resultats.find({ tirage }).sort({ date: -1 });
-    if (results.length > 0) latest[tirage] = results[0];
+  for (const g of RAPIDAPI_GAMES) {
+    const rows = await db.resultats.find({ tirage: g.tirage }).sort({ date:-1 });
+    if (rows.length > 0) latest[g.tirage] = rows[0];
   }
   return latest;
 }
@@ -393,63 +361,50 @@ async function getLatestResults() {
 // ══════════════════════════════════════════════════════════════
 //  ROUTES
 // ══════════════════════════════════════════════════════════════
-
-// GET /api/resultats/fetch — déclencher manuellement
 router.get('/fetch', async (req, res) => {
   try {
     const broadcast = req.app?.locals?.broadcast;
-    const results = await fetchAllResults();
-    const saved   = await saveResults(results, broadcast);
-    const all     = await getLatestResults();
-    res.json({ success: true, fetched: Object.keys(results).length, saved: saved.length, results: all });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
+    const results   = await fetchAllResults();
+    const saved     = await saveResults(results, broadcast);
+    const all       = await getLatestResults();
+    res.json({ success:true, fetched: Object.keys(results).length, saved: saved.length,
+      sources: { rapidapi: RAPIDAPI_KEY ? 'configured' : 'missing', backup: 'lottery.net' },
+      results: all });
+  } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-// GET /api/resultats/latest — derniers résultats par tirage
 router.get('/latest', async (req, res) => {
-  try {
-    const latest = await getLatestResults();
-    res.json(latest);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
+  try { res.json(await getLatestResults()); }
+  catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-// GET /api/resultats/today — tous les résultats du jour
 router.get('/today', async (req, res) => {
   try {
     const { date } = req.query;
     const d = date ? new Date(date) : new Date();
     d.setHours(0,0,0,0);
     const end = new Date(d); end.setHours(23,59,59,999);
-    const results = await db.resultats.find({ date: { $gte: d, $lte: end } }).sort({ date: -1 });
-    res.json(results);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
+    res.json(await db.resultats.find({ date:{ $gte:d, $lte:end }}).sort({ date:-1 }));
+  } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
-// GET /api/resultats/status — statut du scraper
 router.get('/status', async (req, res) => {
   try {
-    const today   = new Date(); today.setHours(0,0,0,0);
-    const todayResults = await db.resultats.find({ date: { $gte: today } });
-    const lastFetch = global._lastScraperRun || null;
+    const today = new Date(); today.setHours(0,0,0,0);
+    const todayResults = await db.resultats.find({ date:{ $gte:today }});
     res.json({
-      lastRun: lastFetch,
+      lastRun: global._lastScraperRun || null,
+      rapidApiKey: RAPIDAPI_KEY ? '✅ configuré' : '❌ manquant — backup sèlman',
+      sources: { primary:'RapidAPI NosyAPI', backup:'lottery.net HTML' },
       todayCount: todayResults.length,
-      totalTirages: ALL_TIRAGES.length,
-      coverage: `${todayResults.length}/${ALL_TIRAGES.length}`,
-      results: todayResults.map(r => ({ tirage: r.tirage, lot1: r.lot1, source: r.source }))
+      totalTirages: RAPIDAPI_GAMES.length,
+      coverage: `${todayResults.length}/${RAPIDAPI_GAMES.length}`,
+      results: todayResults.map(r => ({ tirage:r.tirage, lot1:r.lot1, source:r.source, date:r.date }))
     });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
+  } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
 module.exports = router;
-module.exports.fetchAllResults   = fetchAllResults;
-module.exports.saveResults       = saveResults;
-module.exports.getLatestResults  = getLatestResults;
+module.exports.fetchAllResults  = fetchAllResults;
+module.exports.saveResults      = saveResults;
+module.exports.getLatestResults = getLatestResults;
