@@ -232,37 +232,69 @@ function parseRapidDate(dateStr) {
 // ══════════════════════════════════════════════════════════════
 //  SOURCE 2 — lottery.net HTML (BACKUP)
 // ══════════════════════════════════════════════════════════════
+function stripHtml(s) {
+  return (s||'').replace(/<[^>]+>/g,'').replace(/&amp;/g,'&').replace(/&nbsp;/g,' ').trim();
+}
+
 function parseHtmlResult(html) {
   try {
     const today = new Date().toISOString().split('T')[0];
-    // Cherche toutes les lignes de tableau avec date + boules
-    const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-    let rowMatch;
+    const yesterday = new Date(); yesterday.setDate(yesterday.getDate()-1);
+    const yStr = yesterday.toISOString().split('T')[0];
     const found = [];
-    while ((rowMatch = rowRegex.exec(html)) !== null) {
-      const row = rowMatch[1];
-      const dateMatch = row.match(/(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s*(\d{4})/i);
-      const numsMatch = row.match(/\*\s*(\d)\s*\*\s*(\d)\s*\*\s*(\d)/);
-      if (dateMatch && numsMatch) {
-        const d = new Date(`${dateMatch[1]} ${dateMatch[2]}, ${dateMatch[3]}`);
+
+    // METÒD 1: rows <tr>
+    const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+    let m;
+    while ((m = rowRegex.exec(html)) !== null) {
+      const text = stripHtml(m[1]);
+      const dateM = text.match(/(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s*(\d{4})/i)
+                 || text.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+      const numsM = text.match(/\b(\d)\b[^\d]*\b(\d)\b[^\d]*\b(\d)\b/);
+      if (!dateM || !numsM) continue;
+      let dateStr;
+      if (dateM[0].includes('/')) {
+        dateStr = dateM[3]+'-'+String(dateM[1]).padStart(2,'0')+'-'+String(dateM[2]).padStart(2,'0');
+      } else {
+        dateStr = new Date(dateM[1]+' '+dateM[2]+', '+dateM[3]).toISOString().split('T')[0];
+      }
+      found.push({ date:dateStr, lot1:numsM[1].padStart(2,'0'), lot2:numsM[2].padStart(2,'0'), lot3:numsM[3].padStart(2,'0'), source:'lottery.net-tr' });
+    }
+
+    // METÒD 2: class ball/number/digit
+    if (found.length === 0) {
+      const balls = [];
+      const ballRx = /class="[^"]*(?:ball|number|digit|winning)[^"]*"[^>]*>(\d)</gi;
+      let bm;
+      while ((bm = ballRx.exec(html)) !== null) balls.push(bm[1]);
+      const dateP = html.match(/(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s*(202\d)/i);
+      if (dateP && balls.length >= 3) {
         found.push({
-          date:  d.toISOString().split('T')[0],
-          lot1: numsMatch[1].padStart(2,'0'),
-          lot2: numsMatch[2].padStart(2,'0'),
-          lot3: numsMatch[3].padStart(2,'0'),
-          source: 'lottery.net-backup',
+          date: new Date(dateP[1]+' '+dateP[2]+', '+dateP[3]).toISOString().split('T')[0],
+          lot1:balls[0].padStart(2,'0'), lot2:balls[1].padStart(2,'0'), lot3:balls[2].padStart(2,'0'),
+          source:'lottery.net-ball'
         });
       }
     }
+
+    // METÒD 3: JSON nan paj la
+    if (found.length === 0) {
+      const jn = html.match(/"numbers"\s*:\s*\[(\d),(\d),(\d)\]/);
+      const jd = html.match(/"drawDate"\s*:\s*"(\d{4}-\d{2}-\d{2})"/);
+      if (jn && jd) found.push({ date:jd[1], lot1:jn[1].padStart(2,'0'), lot2:jn[2].padStart(2,'0'), lot3:jn[3].padStart(2,'0'), source:'lottery.net-json' });
+    }
+
     if (found.length === 0) return null;
     found.sort((a,b) => new Date(b.date) - new Date(a.date));
-    // Accepte aujourd'hui ou hier
-    const yesterday = new Date(); yesterday.setDate(yesterday.getDate()-1);
-    const yStr = yesterday.toISOString().split('T')[0];
     const latest = found[0];
+
+    // Jodi ou yè → retounen
     if (latest.date === today || latest.date === yStr) return latest;
+    // < 3 jou pase → aksepte tou (tiraj pa chak jou)
+    const diff = (new Date(today) - new Date(latest.date)) / 86400000;
+    if (diff <= 3) return latest;
     return null;
-  } catch { return null; }
+  } catch(e) { console.log('[BACKUP] parse error:', e.message); return null; }
 }
 
 async function fetchFromBackup(tiragesToFetch) {
