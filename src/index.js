@@ -42,6 +42,20 @@ function broadcast(data) {
 app.locals.broadcast = broadcast;
 app.locals.wsClients = clients;
 
+// ── Rate Limiting ─────────────────────────────────────────────
+const rateLimitMap = new Map();
+const rateLimit = (max, windowMs) => (req, res, next) => {
+  const key = req.ip || req.connection.remoteAddress || 'unknown';
+  const now = Date.now();
+  const rec = rateLimitMap.get(key) || { count: 0, start: now };
+  if (now - rec.start > windowMs) { rec.count = 1; rec.start = now; }
+  else rec.count++;
+  rateLimitMap.set(key, rec);
+  if (rec.count > max) return res.status(429).json({ message: 'Twòp requèt — eseye ankò nan kèk minit' });
+  next();
+};
+setInterval(() => { const c = Date.now()-60000; rateLimitMap.forEach((v,k)=>{ if(v.start<c) rateLimitMap.delete(k); }); }, 600000);
+
 // ── ROUTES ────────────────────────────────────────────────────
 app.use('/api/auth',      rateLimit(20, 60000), require('./routes/auth')); // 20 koneksyon/minit
 app.use('/api/agent',     require('./routes/agent'));
