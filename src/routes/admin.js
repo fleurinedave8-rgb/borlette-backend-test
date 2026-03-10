@@ -46,6 +46,8 @@ router.get('/stats', auth, async (req, res) => {
       ? agentsData.reduce((s,a) => s+(a.agentPct||10), 0) / agentsData.length
       : 10;
     const commJodi = venteJodi * avgPct / 100;
+    const agentsActifList   = agentsData.filter(a => a.actif !== false);
+    const agentsInactifList = agentsData.filter(a => a.actif === false);
 
     // Vant pa tiraj jodi a
     const tirages = await db.tirages.find({});
@@ -85,6 +87,18 @@ router.get('/stats', auth, async (req, res) => {
     res.json({
       // Agents & POS
       totalAgents: agents.length,
+      agentsActif: agentsActifList.length,
+      agentsInactif: agentsInactifList.length,
+      agentsActifList: agentsActifList.map(a => ({
+        _id: a._id, nom: a.nom, prenom: a.prenom,
+        username: a.username, telephone: a.telephone,
+        actif: a.actif !== false,
+      })),
+      agentsInactifList: agentsInactifList.map(a => ({
+        _id: a._id, nom: a.nom, prenom: a.prenom,
+        username: a.username, telephone: a.telephone,
+        actif: false,
+      })),
       totalPos: posActifs.length,
       posOnline: posOnline.length,
       totalPos_all: allPos.length,
@@ -429,7 +443,8 @@ router.post('/pos', auth, adminOnly, async (req, res) => {
       messageAdmin: messageAdmin || '',
       actif: true, online: false,
       createdAt: new Date(),
-    });
+    
+        logo: req.body.logo || '',});
     res.json(p);
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
